@@ -1,7 +1,7 @@
 # Intelligent Matrix Headlight System
 ### Week 1 — Detection Pipeline & Simulated LED Matrix
 
-> **Hackathon track** | Team of 2 | Status: ✅ Week 1 Complete
+> **Hackathon track** | Team of 4 | Status: ✅ Week 1 Complete
 
 ---
 
