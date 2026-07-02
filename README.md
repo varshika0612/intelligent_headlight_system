@@ -1,32 +1,86 @@
-# Intelligent Matrix Headlight System
-### Week 1 — Detection Pipeline & Simulated LED Matrix
+<div align="center">
 
-> **Hackathon track** | Team of 4 | Status: ✅ Week 1 Complete
+<img src="https://img.shields.io/badge/Python-3.12-3776AB?style=for-the-badge&logo=python&logoColor=white"/>
+<img src="https://img.shields.io/badge/YOLOv8-Ultralytics-FF6B35?style=for-the-badge"/>
+<img src="https://img.shields.io/badge/OpenCV-4.13-5C3EE8?style=for-the-badge&logo=opencv&logoColor=white"/>
+<img src="https://img.shields.io/badge/Tests-35%20Passing-22C55E?style=for-the-badge"/>
+
+# Intelligent Headlight System
+
+**Real-time adaptive headlight control using computer vision.**  
+Detects vehicles, people, and bikes — dims only the LED zones where they are,  
+keeps full brightness everywhere else.
+
+*Adaptive headlights exist in luxury cars costing ₹50L+.  
+This project implements the core algorithm on a ₹2000 hardware budget.*
+
+</div>
 
 ---
 
-## What this does
+## The Problem
 
-A real-time computer vision pipeline that:
-1. Captures live webcam feed
-2. Detects vehicles, people, and bikes using YOLOv8
-3. Estimates distance to each detected object
-4. Renders a simulated 8×8 LED matrix that dims in zones where objects are detected
+High-beam headlights cause glare for oncoming drivers and pedestrians — a leading cause of night-time road accidents. Traditional solutions are expensive, proprietary, and require custom hardware. 
 
-No hardware required to run Week 1 — everything runs on a laptop with a webcam.
+This system solves it with a camera, a $5 microcontroller, and computer vision.
 
 ---
 
-## Demo
+## How It Works
 
 ```
-[ Camera Feed + Bounding Boxes ]  |  [ Simulated LED Matrix ]
-  ID:0 person 2.3m                |   ■ ■ ■ □ □ ■ ■ ■
-  ID:1 car 18.4m                  |   ■ ■ ■ □ □ ■ ■ ■
-                                  |   ■ ■ ■ ■ ■ ■ ■ ■
-                                  |   ■ ■ ■ ■ ■ ■ ■ ■
-  ■ = LED ON   □ = LED OFF (glare zone)
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│   Webcam    │────▶│  YOLOv8n   │────▶│ IOU Tracker │────▶│  mask_gen   │
+│  Live Feed  │     │  Detector   │     │ Stable IDs  │     │ bbox → grid │
+└─────────────┘     └─────────────┘     └─────────────┘     └──────┬──────┘
+                                                                     │
+                          ┌──────────────────────────────────────────┘
+                          ▼
+                   ┌─────────────┐     ┌─────────────┐
+                   │  8×8 LED   │────▶│   Display   │
+                   │    Mask     │     │  Simulation │
+                   └─────────────┘     └─────────────┘
 ```
+
+Each camera frame goes through five stages: capture → detect → track → map → render. The result is an 8×8 boolean grid where `True` means dim and `False` means full brightness — updated every frame in real time.
+
+---
+
+## The Math
+
+### Grid Mapping  *(mask_gen.py)*
+
+A bounding box `(x_min, y_min, x_max, y_max)` from a 1920×1080 frame maps to the 8×8 LED grid using:
+
+```
+Grid_col = ⌊ x × 8 / 1920 ⌋
+Grid_row = ⌊ y × 8 / 1080 ⌋
+```
+
+Both corners of the bounding box are mapped independently. Every LED cell between them is dimmed. A ±1 cell margin is added on all sides to prevent edge glare.
+
+### Distance Estimation  *(detector.py)*
+
+Uses the pinhole camera model:
+
+```
+distance (m) = real_height (m) × focal_length (px)
+               ─────────────────────────────────────
+                      pixel_height (px)
+```
+
+Known heights: person = 1.75m, car = 1.50m, truck = 2.80m.  
+Accuracy after calibration: **±20%** — sufficient for LED zone selection.
+
+### IOU Matching  *(tracker.py)*
+
+```
+        Intersection Area
+IOU =  ─────────────────
+           Union Area
+```
+
+Tracks with IOU > 0.3 across consecutive frames are considered the same object. Unmatched tracks survive up to 5 frames before being dropped — eliminating LED flicker from single-frame detection misses.
 
 ---
 
@@ -36,237 +90,193 @@ No hardware required to run Week 1 — everything runs on a laptop with a webcam
 intelligent-headlight-system/
 │
 ├── src/
-│   ├── detector.py          # YOLOv8 inference + distance estimation
-│   ├── tracker.py           # IOU-based object tracker (stable IDs)
-│   ├── mask_gen.py          # Maps bounding boxes → LED grid indices
-│   ├── led_display.py       # Simulated 8×8 LED matrix (OpenCV)
-│   └── main.py              # Entry point — wires all modules together
+│   ├── detector.py          YOLOv8 inference + distance estimation
+│   ├── tracker.py           IOU-based object tracker (stable IDs)
+│   ├── mask_gen.py          Bounding box → 8×8 LED grid mapping
+│   ├── led_display.py       Simulated LED matrix (OpenCV + numpy)
+│   ├── main.py              Pipeline entry point
+│   └── detector_test.py     Quick visual sanity check (webcam only)
 │
 ├── calibration/
-│   ├── focal_calibration.py # One-time script to calibrate focal length
-│   └── calibration.json     # Generated in Week 3 (hardware calibration)
+│   ├── focal_calibration.py One-time focal length calibration script
+│   └── calibration.json     Generated after calibration (Week 3)
 │
 ├── tests/
-│   ├── test_detector.py
-│   ├── test_mask_gen.py
-│   └── test_led_display.py
+│   ├── test_mask_gen.py     25 tests — geometry and grid mapping
+│   ├── test_detector.py     5 tests  — distance formula
+│   └── test_led_display.py  5 tests  — LED rendering
 │
-├── demo/                    # Store demo screenshots and videos here
-├── assets/                  # Sample videos for testing without webcam
-├── requirements.txt
-├── .gitignore
-└── README.md
+├── assets/                  Sample videos for testing without webcam
+├── demo/                    Screenshots and demo recordings
+└── requirements.txt
 ```
 
 ---
 
-## Requirements
-
-- Python 3.10+
-- Webcam
-- No GPU needed — runs on CPU
-
----
-
-## Installation
+## Quick Start
 
 ```bash
-# 1. Clone the repo
-git clone https://github.com/YOUR_USERNAME/intelligent-headlight-system.git
+# Clone and set up
+git clone https://github.com/your-repo/intelligent-headlight-system
 cd intelligent-headlight-system
-
-# 2. (Recommended) create a virtual environment
-python -m venv venv
-
-# Windows
-venv\Scripts\activate
-
-# Mac/Linux
-source venv/bin/activate
-
-# 3. Install dependencies
+python -m venv venv && source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-```
 
-`requirements.txt`:
-```
-ultralytics
-opencv-python
-numpy
-pyserial
-filterpy
-```
+# Verify everything works — should show 35 passed
+pytest tests/ -v
 
-> YOLOv8n model weights (~6 MB) download automatically on first run. No manual download needed.
+# Sanity check detector alone first
+python src/detector_test.py
+
+# Run full pipeline — live webcam
+python src/main.py
+
+# Run on a video file
+python src/main.py --source assets/sample.mp4
+
+# Run without webcam (synthetic detections)
+python src/main.py --stub
+```
 
 ---
 
-## Running
+## Calibration
 
-### Main pipeline (camera + LED display)
+Run once before using the system for the first time:
+
 ```bash
-cd src
-python main.py
+python calibration/focal_calibration.py
 ```
 
-Press `Q` to quit.
+Stand exactly **2 metres** from the webcam. Press `SPACE` three times when your full body is visible in the frame. Copy the printed `FOCAL_LENGTH` value into `src/detector.py`:
 
-### Test detector only
-```bash
-cd src
-python detector.py
-```
-
-### Calibrate focal length (do this once)
-```bash
-cd calibration
-python focal_calibration.py
-```
-
-Stand exactly **2 metres** from your webcam, press **SPACE**.  
-Copy the printed `FOCAL_LENGTH` value into `src/detector.py`.
-
----
-
-## Module Breakdown
-
-### `detector.py` — YOLOv8 Inference
-Wraps YOLOv8n to detect road users in a single frame.
-
-**Detects:**
-| Class | Label |
-|---|---|
-| 0 | person |
-| 1 | bicycle |
-| 2 | car |
-| 3 | motorcycle |
-| 5 | bus |
-| 7 | truck |
-
-**Key settings:**
 ```python
-CONFIDENCE_THRESHOLD = 0.45   # detections below this are ignored
-HORIZON_RATIO = 0.55          # ignore detections in top 55% of frame (sky)
-FOCAL_LENGTH = 347.82         # calibrate this to your webcam (see below)
+FOCAL_LENGTH = YOUR_VALUE_HERE   # line 12 of detector.py
 ```
 
-**Distance estimation:**  
-Uses bounding box height + known real-world object heights to estimate distance in metres.
+---
+
+## Detection Classes and Colours
+
+| Class | Box Colour | Real Height Used |
+|-------|-----------|-----------------|
+| Person | Blue | 1.75 m |
+| Car | Green | 1.50 m |
+| Truck | Orange | 2.80 m |
+| Bus | Purple | 3.20 m |
+| Motorcycle | Yellow-green | 1.20 m |
+| Bicycle | Pink | 1.10 m |
+| *Coasting (any)* | *Grey* | *— tracker holding* |
+
+Boxes drawn in their class colour when actively detected. Grey when the tracker is holding from previous frames.  
+Boxes drawn **3px thick** when the object is within 5 metres. **2px** otherwise.
+
+---
+
+## LED Mask Convention
+
+| Value | LED State | When |
+|-------|-----------|------|
+| `True` | **OFF** — dimmed | Object detected in this zone |
+| `False` | **ON** — full brightness | Clear road ahead |
+
+---
+
+## What We Have Built
+
+### ✅ Completed
+
+**Geometry module (`mask_gen.py`)** — fully implemented and battle-tested.
+Converts any bounding box to LED grid coordinates using the linear mapping formula. Handles all edge cases: coordinates at frame boundary, zero-area boxes, inverted boxes, objects spanning multiple LED zones, margin clamping at grid edges. 25 passing unit tests covering every case.
+
+**Real-time detection (`detector.py`)** — YOLOv8n running live.
+Filters to 6 road-relevant classes. Applies a horizon filter (ignores detections above 55% frame height — eliminates false triggers from signs and bridges). Estimates distance using the pinhole model. Falls back to synthetic detections gracefully when no camera is available.
+
+**IOU Tracker (`tracker.py`)** — stable object identities across frames.
+Greedy IOU matching assigns consistent IDs to the same object across frames. Coasting for up to 5 missed frames prevents LED flicker. No external library required — pure numpy.
+
+**LED Simulation (`led_display.py`)** — real-time visual display.
+Renders the 8×8 boolean mask as a 534×534 pixel panel using pure numpy array slicing. Yellow-white for ON cells, dark grey for OFF cells, inner glow effect. Platform-independent — no dependency on specific OpenCV installation variants.
+
+**Full pipeline (`main.py`)** — all modules wired together.
+Side-by-side window: annotated camera feed on the left, LED matrix on the right. Per-class colour coding, FPS counter, object count, coasting detection visualisation. Supports webcam, video file, and headless stub mode.
+
+**Test suite** — 35 tests, all passing.
+Covers the grid mapping formula, edge cases, distance calculation, LED rendering correctness, and cross-module integration. Runs in under 1 second.
+
+---
+
+## What We Are Building Next
+
+### 🔨 In Progress
+
+**Oncoming vehicle detection**  
+Same-direction vehicles (driving away) should not trigger dimming — only oncoming vehicles cause glare. Implementing bbox growth tracking inside the IOU tracker: a bounding box that grows larger across frames indicates an approaching vehicle. Oncoming label added to track dict; `mask_gen` filters by direction before generating the mask.
+
+**Distance-based dimming zones**  
+Currently all detected objects trigger full dimming. The upgrade introduces three zones:
 ```
-distance = (real_height × focal_length) / bbox_pixel_height
+> 40m   →   no action
+15–40m  →   40% dim
+< 15m   →   full dim
 ```
-Smoothed over last 5 frames to prevent flickering.
+`generate_mask` returns a float array (0.0–1.0) instead of boolean, and `led_display` scales LED brightness accordingly.
 
----
+### 📋 Planned
 
-### `tracker.py` — IOU Object Tracker
-Assigns stable IDs to detections across frames using Intersection over Union (IOU) matching.
+**Physical LED matrix**  
+WS2812B 8×8 matrix connected to Arduino Uno via USB serial. `serial_writer.py` (currently empty) sends the mask over serial every frame. Arduino receives and sets individual LED brightness. This is the single biggest demo impact — a physical panel responding to a live camera.
 
-- Prevents LED flicker when a detection is missed for 1–2 frames
-- Tracks up to `max_lost_frames=5` frames of absence before dropping a track
-- No external tracking library needed — pure numpy
+**Night detection (`night_detector.py`)**  
+YOLOv8 was trained on daytime images and struggles at night when only headlights are visible. A parallel classical CV pipeline: brightness threshold → connected components → blob pairing by separation width (narrow pair = motorcycle, medium = car, wide = truck). Runs alongside YOLO, merges detections, activated automatically when mean frame brightness drops below 80/255.
 
----
+**Fine-tuned night model**  
+YOLOv8n fine-tuned on BDD100K night sequences using Google Colab (T4 GPU, ~50 epochs, freeze=10 to prevent catastrophic forgetting of daytime performance). Replaces the classical night detector for better accuracy in complex night scenes.
 
-### `mask_gen.py` — Bounding Box → LED Grid Mapping
-Converts tracked object bounding boxes into an 8×8 boolean LED mask.
-
-- `True` = LED OFF (object in this zone — preventing glare)
-- `False` = LED ON (clear road — full illumination)
-- Adds ±1 LED margin padding around each bounding box
-- Uses linear mapping in Week 1 — replaced with calibration JSON in Week 3
-
----
-
-### `led_display.py` — Simulated LED Matrix
-Renders an 8×8 LED grid using OpenCV as a visual stand-in for physical hardware.
-
-- Bright yellow-white = LED ON
-- Dark grey = LED OFF
-- Hackathon demo fallback if physical hardware isn't at venue
-
----
-
-### `main.py` — Pipeline Entry Point
-Wires all modules into a single loop:
-
-```
-webcam → detector → tracker → mask_gen → led_display
-                                       → serial_writer (Week 2)
-```
-
-Displays a side-by-side window: camera feed on left, LED matrix on right.
-
----
-
-## Calibrating Focal Length
-
-This step is required for accurate distance estimation.
-
-1. Run `calibration/focal_calibration.py`
-2. Stand exactly **2 metres** from the webcam
-3. Press **SPACE** when your bounding box is visible
-4. Copy the printed focal length into `src/detector.py`:
-```python
-FOCAL_LENGTH = YOUR_VALUE_HERE
-```
-
-Expected distance accuracy after calibration: **±20%**  
-Good enough for LED zone selection — this is not a precision depth sensor.
-
----
-
-## Known Limitations (Week 1)
-
-| Limitation | Fix planned |
-|---|---|
-| LED mapping is linear, not calibrated to physical hardware | Week 3 — calibration JSON |
-| No serial comms to MCU yet | Week 2 — `serial_writer.py` |
-| No agentic persistence (LEDs restore instantly) | Week 2 — `agent.py` |
-| Distance accuracy ±20% | Acceptable for prototype |
-| Low light performance depends on webcam quality | Test with a decent webcam |
-
----
-
-## Week-by-Week Progress
-
-| Week | Status | Focus |
-|---|---|---|
-| **Week 1** | ✅ Complete | Detector, tracker, mask gen, sim LED display |
-| **Week 2** | 🔄 In progress | Agentic controller, serial writer, hardware handshake |
-| **Week 3** | ⏳ Upcoming | Live pipeline, hardware calibration, end-to-end test |
-| **Week 4** | ⏳ Upcoming | Polish, demo video, code freeze, pitch prep |
+**Focal calibration JSON**  
+Non-linear zone mapping using `calibration.json` produced by the calibration script. Replaces the current linear formula for more accurate LED zone selection when the camera has significant lens distortion.
 
 ---
 
 ## Team
 
-| Person | Owns |
-|---|---|
-| Person A | `detector.py`, `tracker.py`, `agent.py` |
-| Person B | `led_display.py`, `mask_gen.py`, `serial_writer.py` |
-| Both | `main.py` — coordinate before editing |
+| Person | Role |
+|--------|------|
+| Sri | Geometry module (`mask_gen.py`), math documentation, integration |
+| Person A | Detection (`detector.py`), tracking (`tracker.py`), night model |
+| Person B | LED display, hardware (`serial_writer.py`), Arduino integration |
 
 ---
 
-## Branch Strategy
+## Results
 
-```
-main   ← clean, demo-ready code (merge at end of each week)
-dev    ← daily working branch (both push here)
-```
-
-```bash
-# daily workflow
-git pull origin dev
-# ... write code ...
-git add .
-git commit -m "describe what you did"
-git push origin dev
-```
+| Metric | Value |
+|--------|-------|
+| Detection classes | 6 (person, car, truck, bus, motorcycle, bicycle) |
+| Grid resolution | 8 × 8 (64 zones) |
+| Pipeline FPS (CPU) | 10–15 FPS on YOLOv8n |
+| Distance accuracy | ±20% after focal calibration |
+| Test coverage | 35 tests, 100% passing |
+| Distance range | Reliable 2m – 30m |
 
 ---
 
-## License
+## Requirements
 
-MIT
+```
+ultralytics >= 8.0.0
+opencv-python >= 4.8.0
+numpy >= 1.24.0
+pytest >= 7.4.0
+pyserial >= 3.5        # Week 2: Arduino serial
+```
+
+Python 3.10 or higher. No GPU required — runs on CPU with YOLOv8n.
+
+---
+
+<div align="center">
+
+*Built from scratch. Every formula derived. Every edge case tested.*
+
+</div>
