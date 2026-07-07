@@ -35,6 +35,18 @@ class TestDistanceEstimation:
     def test_unknown_label_returns_none(self):
         assert self.det._estimate_distance("elephant", 100) is None
 
+    def test_detect_forces_night_model_even_on_bright_frame(self):
+        det = VehicleDetector.__new__(VehicleDetector)
+        det.night_model = object()
+        det.model = object()
+        det._detect_night = lambda frame: [{"label": "car"}]
+        det._detect_day = lambda frame: [{"label": "day"}]
+        det._is_night = lambda frame: False
+
+        detections = det.detect(np.zeros((100, 100, 3), dtype=np.uint8))
+
+        assert detections == [{"label": "car"}]
+
     def test_stub_returns_two_detections(self):
         dummy = np.zeros((1080, 1920, 3), dtype=np.uint8)
         dets = self.det._stub_detections(dummy)

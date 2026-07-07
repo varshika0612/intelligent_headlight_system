@@ -16,6 +16,7 @@ Usage:
 import argparse
 import sys
 import time
+from pathlib import Path
 import numpy as np
 
 try:
@@ -40,7 +41,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--source",     default=0,     help="0 = webcam, or path to video file")
     p.add_argument("--stub",       action="store_true", help="Synthetic detections, no webcam")
     p.add_argument("--no-display", action="store_true", help="Headless / CI mode")
-    p.add_argument("--model",      default="yolov8n.pt", help="YOLOv8 weights path")
+    p.add_argument("--model", default=str(Path(__file__).resolve().parent.parent / "best.pt"), help="Night YOLOv8 weights path")
     p.add_argument("--device",     default="cpu",  help="cpu | cuda | mps")
     return p.parse_args()
 
