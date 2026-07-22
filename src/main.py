@@ -16,7 +16,6 @@ Usage:
 import argparse
 import sys
 import time
-from pathlib import Path
 import numpy as np
 
 try:
@@ -41,8 +40,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--source",     default=0,     help="0 = webcam, or path to video file")
     p.add_argument("--stub",       action="store_true", help="Synthetic detections, no webcam")
     p.add_argument("--no-display", action="store_true", help="Headless / CI mode")
-    p.add_argument("--model", default=str(Path(__file__).resolve().parent.parent / "best.pt"), help="Night YOLOv8 weights path")
-    p.add_argument("--device",     default="cpu",  help="cpu | cuda | mps")
+    p.add_argument("--model", default=None, help="YOLOv8 weights path (default: uses MODEL_PATH from detector.py)")
+    p.add_argument("--device",     default="cuda",  help="cpu | cuda | mps")
     return p.parse_args()
 
 
@@ -136,7 +135,11 @@ def make_combined(camera: np.ndarray, led: np.ndarray) -> np.ndarray:
 # ── Main loops ────────────────────────────────────────────────────────────────
 
 def run(args: argparse.Namespace) -> None:
-    detector = VehicleDetector(model_path=args.model, device=args.device)
+    from detector import MODEL_PATH
+    detector = VehicleDetector(
+    model_path = args.model if args.model else MODEL_PATH,
+    device     = args.device,
+    )
     tracker  = IOUTracker()
     display  = LEDDisplay()
 
@@ -190,6 +193,13 @@ def run(args: argparse.Namespace) -> None:
                 cv2.putText(combined, f"FPS: {fps:.1f}",
                             (10, 28), cv2.FONT_HERSHEY_SIMPLEX,
                             0.8, (0, 255, 0), 2, cv2.LINE_AA)
+
+                # Day / night mode indicator
+                mode_text  = "BDD100K MODEL"
+                mode_color = (0, 255, 180)   # teal — single model indicator
+                cv2.putText(combined, mode_text,
+                            (10, 58), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.7, mode_color, 2, cv2.LINE_AA)
 
                 # Object count bottom-left
                 cv2.putText(combined, f"Objects: {len([t for t in tracks if t['lost_frames']==0])}",
