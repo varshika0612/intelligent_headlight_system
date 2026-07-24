@@ -1,11 +1,15 @@
 """
-detector.py — YOLOv8 Inference + Distance Estimation
-=====================================================
-Single BDD100K fine-tuned model handles all lighting conditions.
-Day, night, dusk — one model, no switching logic.
+detector.py — YOLOv8 Two-Model Pipeline
+========================================
+Model 1 (BDD100K): Detects vehicles, people, riders in all lighting conditions.
+Model 2 (front_rear_v1): Classifies each detected vehicle crop as front or rear.
 
-Classes: person, rider, car, truck, bus, motorcycle, bicycle
-Distance estimated using pinhole camera model.
+Pipeline per frame:
+    1. Model 1 finds all vehicles/people with bounding boxes
+    2. Each vehicle bbox is cropped from the frame
+    3. Model 2 classifies the crop as 'front' or 'rear'
+    4. direction field is set on each detection
+    5. main.py dims LEDs only for 'front' detections and people
 """
 
 import cv2
@@ -15,8 +19,9 @@ from typing import List, Dict, Optional
 # ── Calibration ───────────────────────────────────────────────────────────────
 FOCAL_LENGTH: float = 615.0   # update after running focal_calibration.py
 
-# ── Model path ────────────────────────────────────────────────────────────────
-MODEL_PATH: str = "best.pt"   # BDD100K fine-tuned — all conditions
+# ── Model paths ───────────────────────────────────────────────────────────────
+MODEL_PATH:      str = "best.pt"           # BDD100K — all lighting conditions
+CLASSIFIER_PATH: str = "front_rear_v1.pt"  # front/rear classifier
 
 # ── Real-world heights (metres) for distance estimation ───────────────────────
 REAL_HEIGHTS: Dict[str, float] = {
@@ -30,11 +35,9 @@ REAL_HEIGHTS: Dict[str, float] = {
 }
 
 # ── BDD100K label → pipeline label ────────────────────────────────────────────
-# Your BDD100K data.yaml classes:
-#   0:person  1:rider  2:car  3:truck  4:bus  5:motorcycle  6:bicycle
 LABEL_MAP: Dict[str, str] = {
     "person":     "person",
-    "rider":      "person",      # rider = person on vehicle
+    "rider":      "person",
     "car":        "car",
     "truck":      "truck",
     "bus":        "bus",
@@ -44,23 +47,29 @@ LABEL_MAP: Dict[str, str] = {
 
 CONFIDENCE_THRESHOLD: float = 0.35
 HORIZON_RATIO:        float = 0.0
+MIN_CROP_SIZE:        int   = 20   # pixels — crops smaller than this are skipped
+
 
 class VehicleDetector:
-    """Single-model detector using BDD100K fine-tuned YOLOv8n."""
+    """Two-model pipeline: BDD100K detector + front/rear classifier."""
 
     def __init__(
         self,
-        model_path:   str   = MODEL_PATH,
-        confidence:   float = CONFIDENCE_THRESHOLD,
-        focal_length: float = FOCAL_LENGTH,
-        device:       str   = "cpu",
+        model_path:      str   = MODEL_PATH,
+        classifier_path: str   = CLASSIFIER_PATH,
+        confidence:      float = CONFIDENCE_THRESHOLD,
+        focal_length:    float = FOCAL_LENGTH,
+        device:          str   = "cpu",
     ) -> None:
         self.confidence   = confidence
         self.focal_length = focal_length
         self.device       = device
 
-        print("[Detector] Loading BDD100K model...")
+        print("[Detector] Loading BDD100K model (Model 1)...")
         self.model = self._load_model(model_path)
+
+        print("[Detector] Loading front/rear classifier (Model 2)...")
+        self.classifier = self._load_model(classifier_path)
 
     # ── Model loading ─────────────────────────────────────────────────────────
 
@@ -81,11 +90,7 @@ class VehicleDetector:
     # ── Public API ────────────────────────────────────────────────────────────
 
     def detect(self, frame: np.ndarray) -> List[Dict]:
-        """Run detection on a single BGR frame.
-
-        Works for all lighting conditions — day, night, dusk.
-        Does NOT draw anything on the frame.
-        All drawing happens in main.py.
+        """Run two-model pipeline on a single BGR frame.
 
         Returns list of dicts:
             {
@@ -93,6 +98,7 @@ class VehicleDetector:
                 confidence: float,
                 bbox:       (x1, y1, x2, y2),
                 distance:   float | None,
+                direction:  'front' | 'rear' | 'unknown',
                 mode:       'auto'
             }
         """
@@ -101,10 +107,9 @@ class VehicleDetector:
         return self._stub_detections(frame)
 
     def current_mode(self) -> str:
-        """Single unified model — always returns 'auto'."""
         return "auto"
 
-    # ── Inference ─────────────────────────────────────────────────────────────
+    # ── Model 1: detection ────────────────────────────────────────────────────
 
     def _run_inference(self, frame: np.ndarray) -> List[Dict]:
         h, w      = frame.shape[:2]
@@ -128,13 +133,19 @@ class VehicleDetector:
 
                 label = LABEL_MAP.get(raw_label)
                 if label is None:
-                    continue   # ignore irrelevant classes
+                    continue
 
                 x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
 
-                # Ignore detections above horizon — signs, bridges, sky
                 if y2 < horizon_y:
                     continue
+
+                # ── Model 2: classify front vs rear ──────────────────────────
+                if label == "person":
+                    # Always dim for people regardless of direction
+                    direction = "front"
+                else:
+                    direction = self._classify_direction(frame, x1, y1, x2, y2, w, h)
 
                 conf     = float(box.conf[0].item())
                 distance = self._estimate_distance(label, max(1, y2 - y1))
@@ -144,16 +155,66 @@ class VehicleDetector:
                     "confidence": conf,
                     "bbox":       (x1, y1, x2, y2),
                     "distance":   distance,
+                    "direction":  direction,
                     "mode":       "auto",
                 })
 
         return detections
 
+    # ── Model 2: front/rear classifier ───────────────────────────────────────
+
+    def _classify_direction(
+        self, frame: np.ndarray,
+        x1: int, y1: int, x2: int, y2: int,
+        fw: int, fh: int,
+    ) -> str:
+        """Crop the vehicle from the frame and classify as front or rear."""
+        if self.classifier is None:
+            return "unknown"
+
+        # Clamp crop to frame bounds
+        cx1 = max(0, x1)
+        cy1 = max(0, y1)
+        cx2 = min(fw, x2)
+        cy2 = min(fh, y2)
+
+        crop = frame[cy1:cy2, cx1:cx2]
+
+        # Reject crops too small to classify
+        if crop is None or crop.size == 0:
+            return "unknown"
+        ch, cw = crop.shape[:2]
+        if ch < MIN_CROP_SIZE or cw < MIN_CROP_SIZE:
+            return "unknown"
+
+        results = self.classifier.predict(
+            source  = crop,
+            conf    = 0.45,
+            verbose = False,
+            device  = self.device,
+        )
+
+        # Take highest confidence detection
+        best_label = "unknown"
+        best_conf  = 0.0
+
+        for result in results:
+            if result.boxes is None:
+                continue
+            for box in result.boxes:
+                conf      = float(box.conf[0].item())
+                cls_id    = int(box.cls[0].item())
+                det_label = result.names.get(cls_id, "unknown").lower()
+
+                if conf > best_conf and det_label in ("front", "rear"):
+                    best_conf  = conf
+                    best_label = det_label
+
+        return best_label
+
     # ── Distance estimation ───────────────────────────────────────────────────
 
     def _estimate_distance(self, label: str, pixel_height: int) -> Optional[float]:
-        """Pinhole model: distance = (real_height × focal_length) / pixel_height.
-        Accuracy ±20% after focal calibration."""
         real_h = REAL_HEIGHTS.get(label)
         if real_h is None or pixel_height <= 0:
             return None
@@ -162,21 +223,16 @@ class VehicleDetector:
     # ── Stub ──────────────────────────────────────────────────────────────────
 
     def _stub_detections(self, frame: np.ndarray) -> List[Dict]:
-        """Synthetic detections when no model is loaded — for tests and CI."""
         h, w = frame.shape[:2]
         return [
             {
-                "label":      "car",
-                "confidence": 0.91,
-                "bbox":       (int(w*0.1), int(h*0.3), int(w*0.4), int(h*0.7)),
-                "distance":   9.5,
-                "mode":       "stub",
+                "label": "car", "confidence": 0.91,
+                "bbox":  (int(w*0.1), int(h*0.3), int(w*0.4), int(h*0.7)),
+                "distance": 9.5, "direction": "front", "mode": "stub",
             },
             {
-                "label":      "person",
-                "confidence": 0.84,
-                "bbox":       (int(w*0.7), int(h*0.2), int(w*0.8), int(h*0.8)),
-                "distance":   4.2,
-                "mode":       "stub",
+                "label": "person", "confidence": 0.84,
+                "bbox":  (int(w*0.7), int(h*0.2), int(w*0.8), int(h*0.8)),
+                "distance": 4.2, "direction": "front", "mode": "stub",
             },
         ]
